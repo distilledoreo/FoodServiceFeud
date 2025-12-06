@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Family Feud System (Import Fix)</title>
+    
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Anton&family=Roboto+Condensed:wght@700&display=swap" rel="stylesheet">
+    
+    <style id="app-styles">
+        body {
+            font-family: 'Roboto Condensed', sans-serif;
+            background-color: #0f172a; /* Slate 900 */
+            color: white;
+            overflow: hidden;
+            margin: 0;
+        }
+        .feud-font {
+            font-family: 'Anton', sans-serif;
+            letter-spacing: 0.05em;
+        }
+        .perspective-1000 {
+            perspective: 1000px;
+        }
+        .transform-style-3d {
+            transform-style: preserve-3d;
+        }
+        .backface-hidden {
+            backface-visibility: hidden;
+        }
+        .rotate-y-180 {
+            transform: rotateY(180deg);
+        }
+        .scanlines {
+            background: linear-gradient(
+                to bottom,
+                rgba(255,255,255,0),
+                rgba(255,255,255,0) 50%,
+                rgba(0,0,0,0.1) 50%,
+                rgba(0,0,0,0.1)
+            );
+            background-size: 100% 4px;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            pointer-events: none;
+            z-index: 50;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+        const { createPortal } = ReactDOM;
+
+        // --- DEMO DATA FOR FALLBACK ---
+        const DEMO_DATA = [
+            {
+                id: 1,
+                question: "Demo: Best meal served?",
+                answers: [
+                    { text: "Brisket", score: 11 },
+                    { text: "Bibimbap", score: 7 },
+                    { text: "Chick-Fil-A", score: 6 },
+                    { text: "Jerk Chicken", score: 5 }
+                ]
+            },
+            {
+                id: 2,
+                question: "Demo: Best work area?",
+                answers: [
+                    { text: "Bakery", score: 25 },
+                    { text: "Dining Room", score: 8 },
+                    { text: "Pattern", score: 5 }
+                ]
+            }
+        ];
+
+        // --- CSV PARSER ---
+        const parseCSV = (text) => {
+            // Normalize line endings
+            text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+            
+            const rows = [];
+            let currentRow = [];
+            let currentCell = '';
+            let inQuotes = false;
+
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                const nextChar = text[i + 1];
+
+                if (char === '"') {
+                    if (inQuotes && nextChar === '"') {
+                        currentCell += '"';
+                        i++; 
+                    } else {
+                        inQuotes = !inQuotes;
+                    }
+                } else if (char === ',' && !inQuotes) {
+                    currentRow.push(currentCell.trim());
+                    currentCell = '';
+                } else if (char === '\n' && !inQuotes) {
+                    if (currentCell || currentRow.length > 0) currentRow.push(currentCell.trim());
+                    if (currentRow.length > 0) rows.push(currentRow);
+                    currentRow = [];
+                    currentCell = '';
+                } else {
+                    currentCell += char;
+                }
+            }
+            if (currentCell || currentRow.length > 0) {
+                currentRow.push(currentCell.trim());
+                rows.push(currentRow);
+            }
+            return rows;
+        };
+
+        const convertCSVToGameData = (rows) => {
+            const games = [];
+            // Try to find where the data starts. If row 0 has "SLIDENUMBER", start at 1.
+            let startIndex = 0;
+            if (rows.length > 0 && rows[0][0] && rows[0][0].toUpperCase().includes('SLIDE')) {
+                startIndex = 1;
+            }
+            
+            for (let i = startIndex; i < rows.length; i++) {
+                const row = rows[i];
+                if (row.length < 3) continue;
+
+                const questionText = row[2];
+                if (!questionText) continue;
+
+                const answers = [];
+                // Answers start at index 3: Text, Score, Text, Score...
+                for (let j = 3; j < row.length; j += 2) {
+                    const ansText = row[j];
+                    const rawScore = row[j+1];
+                    
+                    if (ansText && rawScore) {
+                        const ansScore = parseInt(rawScore);
+                        if (!isNaN(ansScore)) {
+                            const cleanText = ansText.replace(/['"]+/g, '').trim();
+                            answers.push({ text: cleanText, score: ansScore });
+                        }
+                    }
+                }
+
+                if (answers.length > 0) {
+                    games.push({
+                        id: i,
+                        question: questionText.replace(/['"]+/g, ''),
+                        answers: answers
+                    });
+                }
+            }
+            return games;
+        };
+
+        // --- AUDIO SYSTEM ---
+        const AudioSystem = {
+            ctx: null,
+            init: function() {
+                try {
+                    const AudioContext = window.AudioContext || window.webkitAudioContext;
+                    if (AudioContext) {
+                        this.ctx = new AudioContext();
+                    }
+                } catch (e) {
+                    console.warn("Audio Context blocked or not supported", e);
+                }
+            },
+            playTone: function(freq, type, duration, vol = 0.1) {
+                if (!this.ctx) this.init();
+                if (!this.ctx) return;
+                try {
+                    if(this.ctx.state === 'suspended') this.ctx.resume();
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.type = type;
+                    osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                    gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+                    osc.start();
+                    osc.stop(this.ctx.currentTime + duration);
+                } catch (e) { console.error("Audio Play Error", e); }
+            },
+            playDing: function() {
+                this.playTone(880, 'sine', 1.5, 0.3);
+                setTimeout(() => this.playTone(1760, 'sine', 1.5, 0.1), 50);
+            },
+            playBuzz: function() {
+                this.playTone(150, 'sawtooth', 0.8, 0.3);
+                this.playTone(145, 'square', 0.8, 0.3);
+            },
+            playRoundWin: function() {
+                [523.25, 659.25, 783.99, 1046.50].forEach((freq, i) => {
+                    setTimeout(() => this.playTone(freq, 'triangle', 0.5, 0.2), i * 100);
+                });
+            }
+        };
+
+        // --- COMPONENTS ---
+
+        const FileUploader = ({ onUpload }) => {
+            const [error, setError] = useState('');
+
+            const handleFile = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    try {
+                        const csvText = evt.target.result;
+                        const rows = parseCSV(csvText);
+                        const data = convertCSVToGameData(rows);
+                        
+                        if (data.length === 0) {
+                            setError("Error: No valid game data found in file. Check column format.");
+                        } else {
+                            onUpload(data);
+                        }
+                    } catch (err) {
+                        console.error(err);
+                        setError("Error parsing CSV file. Please ensure it is a valid CSV.");
+                    }
+                };
+                reader.readAsText(file);
+            };
+
+            return (
+                <div className="flex flex-col items-center justify-center h-screen bg-slate-900 text-white p-8 text-center scanlines">
+                    <h1 className="text-6xl text-yellow-400 mb-2 feud-font drop-shadow-lg">FAMILY FEUD SYSTEM</h1>
+                    <p className="text-xl text-slate-400 mb-8">System Ready for Data</p>
+                    
+                    <div className="bg-slate-800 p-8 rounded-xl border-2 border-slate-600 shadow-2xl max-w-lg w-full flex flex-col gap-4">
+                        <div className="mb-2">
+                            <div className="text-6xl mb-4">📂</div>
+                            <h2 className="text-2xl font-bold mb-2">Import Spreadsheet</h2>
+                            <p className="text-slate-400 text-sm">Upload your CSV file to begin.</p>
+                        </div>
+
+                        {/* ROBUST LABEL-BASED UPLOAD */}
+                        <label 
+                            htmlFor="csv-upload" 
+                            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-lg transition-all transform hover:scale-105 shadow-lg flex items-center justify-center gap-2 cursor-pointer select-none"
+                        >
+                            <span>SELECT CSV FILE</span>
+                        </label>
+                        <input 
+                            id="csv-upload"
+                            type="file" 
+                            accept=".csv,text/csv,application/vnd.ms-excel"
+                            onChange={handleFile}
+                            style={{ display: 'none' }}
+                        />
+
+                        {/* FALLBACK DEMO BUTTON */}
+                        <button 
+                            onClick={() => onUpload(DEMO_DATA)}
+                            className="text-slate-400 hover:text-white text-sm underline mt-2"
+                        >
+                            Load Demo Data (Test System)
+                        </button>
+
+                        {error && (
+                            <div className="mt-4 text-red-200 bg-red-900/40 p-3 rounded text-sm border border-red-500/50 flex flex-col gap-1">
+                                <strong>Upload Failed</strong>
+                                <span>{error}</span>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const ProjectorWindow = ({ children, onClose }) => {
+            const externalWindow = useRef(null);
+            const [containerEl, setContainerEl] = useState(null);
+
+            useEffect(() => {
+                const win = window.open('', 'FeudProjector', 'width=1280,height=720,left=200,top=200');
+                if (!win) {
+                    alert("⚠️ POPUP BLOCKED: Please verify that your browser allows popups for this site, then try launching the Projector again.");
+                    onClose();
+                    return;
+                }
+                externalWindow.current = win;
+                win.document.body.innerHTML = '';
+                
+                // Copy styles and scripts
+                document.querySelectorAll('style').forEach(s => win.document.head.appendChild(s.cloneNode(true)));
+                document.querySelectorAll('script').forEach(s => {
+                    if (s.src.includes('tailwindcss')) {
+                        const ns = win.document.createElement('script');
+                        ns.src = s.src;
+                        win.document.head.appendChild(ns);
+                    }
+                });
+                document.querySelectorAll('link[rel="stylesheet"]').forEach(l => win.document.head.appendChild(l.cloneNode(true)));
+
+                win.document.body.className = document.body.className;
+                win.document.title = "PROJECTOR VIEW";
+
+                const el = win.document.createElement('div');
+                el.id = 'projector-root';
+                el.style.height = '100vh';
+                win.document.body.appendChild(el);
+                setContainerEl(el);
+
+                win.onbeforeunload = () => onClose();
+                return () => win.close();
+            }, []);
+
+            return containerEl ? createPortal(children, containerEl) : null;
+        };
+
+        const AnswerCard = ({ index, answer, revealed }) => (
+            <div className="relative w-full h-24 md:h-28 perspective-1000 my-2 group cursor-default">
+                <div className={`relative w-full h-full duration-700 transform-style-3d transition-transform ${revealed ? 'rotate-y-180' : ''}`}>
+                    <div className="absolute w-full h-full bg-gradient-to-br from-blue-800 to-blue-900 border-2 border-blue-400 rounded-lg shadow-xl backface-hidden flex items-center justify-center overflow-hidden">
+                        <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-30"></div>
+                        <div className="w-16 h-16 rounded-full bg-blue-950 border-4 border-blue-400 flex items-center justify-center shadow-inner">
+                            <span className="text-4xl font-bold text-blue-200 feud-font">{index + 1}</span>
+                        </div>
+                    </div>
+                    <div className="absolute w-full h-full bg-gradient-to-b from-blue-100 to-white border-4 border-yellow-400 rounded-lg shadow-[0_0_20px_rgba(250,204,21,0.5)] backface-hidden rotate-y-180 flex items-center px-6 justify-between">
+                        <span className="text-3xl md:text-4xl text-blue-900 font-bold uppercase tracking-tight truncate pr-4">{answer.text}</span>
+                        <div className="bg-blue-900 text-white w-20 h-full flex items-center justify-center border-l-4 border-blue-800 shadow-inner absolute right-0 top-0">
+                            <span className="text-4xl font-mono font-bold feud-font">{answer.score}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+
+        const StrikeOverlay = ({ count }) => {
+            if (count === 0) return null;
+            return (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-none">
+                    <div className="flex gap-4">
+                        {Array(count).fill(0).map((_, i) => (
+                            <div key={i} className="text-[150px] md:text-[300px] leading-none text-red-600 font-bold drop-shadow-[0_0_30px_rgba(220,38,38,0.8)] animate-[ping_0.4s_ease-out_1] feud-font border-8 border-red-800 bg-red-100 px-4 rounded-lg">X</div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        const ProjectorView = ({ question, answers, revealedState, strikes, team1Score, team2Score, roundScore, showStrikeOverlay }) => (
+            <div className="h-screen w-screen flex flex-col bg-slate-900 text-white relative overflow-hidden">
+                <div className="scanlines"></div>
+                <StrikeOverlay count={showStrikeOverlay} />
+                <div className="bg-gradient-to-r from-blue-950 via-blue-900 to-blue-950 border-b-8 border-yellow-500 p-6 shadow-2xl flex justify-between items-center z-10">
+                    <div className="w-48 h-32 bg-black border-4 border-slate-600 rounded-xl flex flex-col items-center justify-center shadow-[0_0_20px_rgba(0,0,0,1)] relative overflow-hidden">
+                        <div className="absolute inset-0 bg-gradient-to-b from-transparent to-slate-900/50"></div>
+                        <span className="text-slate-400 text-sm font-bold tracking-[0.2em] uppercase mb-1 z-10">Team 1</span>
+                        <span className="text-6xl text-red-500 font-mono font-bold z-10 drop-shadow-[0_0_10px_rgba(239,68,68,0.8)]">{team1Score}</span>
+                    </div>
+                    <div className="text-center transform scale-125">
+                        <div className="bg-black/60 px-12 py-4 rounded-full border-2 border-blue-400/50 backdrop-blur-md shadow-[0_0_30px_rgba(59,130,246,0.2)]">
+                            <span className="text-yellow-400 text-6xl font-bold tracking-widest feud-font drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]">{roundScore}</span>
+                        </div>
+                    </div>
+                    <div className="w-48 h-32 bg-black border-4 border-slate-600 rounded-xl flex flex-col items-center justify-center shadow-[0_0_20px_rgba(0,0,0,1)] relative overflow-hidden">
+                        <div className="absolute inset-0 bg-gradient-to-b from-transparent to-slate-900/50"></div>
+                        <span className="text-slate-400 text-sm font-bold tracking-[0.2em] uppercase mb-1 z-10">Team 2</span>
+                        <span className="text-6xl text-red-500 font-mono font-bold z-10 drop-shadow-[0_0_10px_rgba(239,68,68,0.8)]">{team2Score}</span>
+                    </div>
+                </div>
+                <div className="flex-1 flex flex-col items-center justify-center p-8 md:p-12 relative bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-blue-900/40 via-slate-900 to-slate-900">
+                    <div className="bg-blue-700 text-white text-center py-6 px-12 rounded-2xl shadow-2xl border-4 border-blue-400 mb-12 max-w-5xl w-full z-10 transform -rotate-1 hover:rotate-0 transition-transform duration-500">
+                        <h2 className="text-3xl md:text-5xl font-bold uppercase tracking-wide drop-shadow-md leading-tight">{question}</h2>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-12 gap-y-4 w-full max-w-7xl">
+                        <div className="flex flex-col gap-2">
+                            {[0, 1, 2, 3].map(idx => (
+                                answers[idx] ? <AnswerCard key={idx} index={idx} answer={answers[idx]} revealed={revealedState[idx]} /> : <div key={idx} className="h-24 md:h-28 my-2 opacity-10 bg-black rounded-lg border-2 border-slate-700"></div>
+                            ))}
+                        </div>
+                        <div className="flex flex-col gap-2">
+                            {[4, 5, 6, 7].map(idx => (
+                                answers[idx] ? <AnswerCard key={idx} index={idx} answer={answers[idx]} revealed={revealedState[idx]} /> : <div key={idx} className="h-24 md:h-28 my-2 opacity-10 bg-black rounded-lg border-2 border-slate-700"></div>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="absolute bottom-8 right-8 flex gap-3 opacity-60">
+                        {Array(strikes).fill(0).map((_, i) => (
+                            <div key={i} className="text-red-600 text-5xl font-bold border-4 border-red-800 px-4 py-2 bg-black rounded">X</div>
+                        ))}
+                    </div>
+                </div>
+            </div>
+        );
+
+        const HostInterface = ({ gameData, state, actions, isProjectorOpen, toggleProjector, onReset }) => {
+            const currentQ = gameData[state.currentQIndex];
+            if (!currentQ) return <div className="p-8 text-white">Error: No Question Data</div>;
+
+            return (
+                <div className="min-h-screen bg-slate-900 text-white p-6 flex flex-col font-sans">
+                    <div className="bg-slate-800 p-4 rounded-xl border border-slate-700 flex justify-between items-center mb-6 shadow-lg">
+                        <div>
+                            <h1 className="text-3xl font-bold text-yellow-400 flex items-center gap-2">
+                                <span className="text-4xl">🎮</span> HOST CONTROL PANEL
+                            </h1>
+                            <p className="text-slate-400 text-sm mt-1">
+                                Keyboard: 1-8 (Reveal), X (Strike), Arrows (Nav)
+                            </p>
+                        </div>
+                        
+                        <div className="flex items-center gap-6">
+                            <button 
+                                onClick={onReset}
+                                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded font-bold border border-slate-500 text-sm"
+                            >
+                                📂 IMPORT NEW FILE
+                            </button>
+
+                            <button 
+                                onClick={toggleProjector}
+                                className={`px-6 py-4 rounded-lg font-bold text-lg flex items-center gap-2 transition-all shadow-lg ${
+                                    isProjectorOpen 
+                                    ? 'bg-green-600 hover:bg-green-500 text-white border-2 border-green-400' 
+                                    : 'bg-red-600 hover:bg-red-500 text-white border-2 border-red-400 animate-pulse'
+                                }`}
+                            >
+                                {isProjectorOpen ? '📺 Projector Active' : '🚀 LAUNCH PROJECTOR'}
+                            </button>
+
+                            <div className="bg-slate-900 p-2 rounded-lg border border-slate-700 flex items-center gap-2">
+                                <button onClick={() => actions.changeQuestion(-1)} className="bg-slate-700 hover:bg-slate-600 p-3 rounded text-white transition">◀</button>
+                                <div className="text-center px-4">
+                                    <div className="text-xs text-slate-400 uppercase tracking-wider">Question</div>
+                                    <div className="text-2xl font-bold text-white">{state.currentQIndex + 1} / {gameData.length}</div>
+                                </div>
+                                <button onClick={() => actions.changeQuestion(1)} className="bg-blue-600 hover:bg-blue-500 p-3 rounded text-white font-bold transition">▶</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-1 gap-6 h-full overflow-hidden">
+                        <div className="flex-[2] bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-xl overflow-y-auto">
+                            <h3 className="text-2xl font-bold mb-6 text-blue-300 border-b border-slate-600 pb-4">
+                                {currentQ.question}
+                            </h3>
+                            
+                            <div className="space-y-3">
+                                {currentQ.answers.map((ans, idx) => (
+                                    <button
+                                        key={idx}
+                                        onClick={() => actions.reveal(idx)}
+                                        disabled={state.revealedState[idx]}
+                                        className={`w-full flex justify-between items-center p-4 rounded-lg text-left transition-all border-l-8 shadow-sm ${
+                                            state.revealedState[idx] 
+                                                ? 'bg-green-900/20 border-green-500 text-green-400 opacity-75' 
+                                                : 'bg-slate-700 hover:bg-blue-600 border-blue-500 hover:border-blue-300 text-white'
+                                        }`}
+                                    >
+                                        <div className="flex items-center gap-4">
+                                            <span className="bg-slate-900 w-10 h-10 flex items-center justify-center rounded font-mono text-lg font-bold text-slate-300">{idx + 1}</span>
+                                            <span className="font-bold text-xl">{ans.text}</span>
+                                        </div>
+                                        <div className="font-mono bg-black/40 px-4 py-2 rounded text-xl font-bold text-yellow-400 border border-white/10">
+                                            {ans.score}
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="flex-1 flex flex-col gap-6">
+                            <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-lg">
+                                <h4 className="text-slate-400 uppercase text-xs font-bold mb-4 tracking-widest">Strikes</h4>
+                                <div className="flex justify-center gap-3 mb-6">
+                                    {[1,2,3].map(s => (
+                                        <div key={s} className={`w-16 h-16 rounded-lg border-4 flex items-center justify-center text-4xl font-bold transition-all ${
+                                            state.strikes >= s 
+                                            ? 'bg-red-600 border-red-400 text-white shadow-[0_0_15px_rgba(220,38,38,0.6)]' 
+                                            : 'bg-slate-900 border-slate-700 text-slate-700'
+                                        }`}>X</div>
+                                    ))}
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                    <button onClick={actions.strike} className="bg-red-600 hover:bg-red-500 text-white font-bold py-6 rounded-lg shadow-lg text-xl uppercase tracking-wider active:scale-95 transition-transform">Strike</button>
+                                    <button onClick={actions.clearStrikes} className="bg-slate-600 hover:bg-slate-500 text-white py-6 rounded-lg font-bold uppercase tracking-wider">Clear</button>
+                                </div>
+                            </div>
+
+                            <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-lg flex-1 flex flex-col">
+                                <h4 className="text-slate-400 uppercase text-xs font-bold mb-4 tracking-widest">Score Distribution</h4>
+                                <div className="flex-1 flex flex-col items-center justify-center mb-6 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                                    <div className="text-sm text-yellow-500 font-bold mb-1 uppercase tracking-widest">Current Pot</div>
+                                    <div className="text-7xl font-mono font-bold text-white drop-shadow-lg">{state.roundScore}</div>
+                                </div>
+                                <div className="space-y-4">
+                                    <button onClick={() => actions.awardPoints(1)} className="w-full bg-blue-900 hover:bg-blue-800 border-2 border-blue-600 hover:border-blue-400 p-4 rounded-lg flex justify-between items-center group transition-all">
+                                        <span className="font-bold text-blue-200 group-hover:text-white uppercase">Award to Team 1</span>
+                                        <div className="flex items-center gap-2"><span className="text-slate-400 text-sm line-through">{state.team1Score}</span><span className="text-white font-mono text-2xl font-bold">→ {state.team1Score + state.roundScore}</span></div>
+                                    </button>
+                                    <button onClick={() => actions.awardPoints(2)} className="w-full bg-blue-900 hover:bg-blue-800 border-2 border-blue-600 hover:border-blue-400 p-4 rounded-lg flex justify-between items-center group transition-all">
+                                        <span className="font-bold text-blue-200 group-hover:text-white uppercase">Award to Team 2</span>
+                                        <div className="flex items-center gap-2"><span className="text-slate-400 text-sm line-through">{state.team2Score}</span><span className="text-white font-mono text-2xl font-bold">→ {state.team2Score + state.roundScore}</span></div>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [gameData, setGameData] = useState(() => {
+                const saved = localStorage.getItem('FEUD_DATA_USER_UPLOAD');
+                return saved ? JSON.parse(saved) : [];
+            });
+            
+            const [isProjectorOpen, setIsProjectorOpen] = useState(false);
+            const [currentQIndex, setCurrentQIndex] = useState(0);
+            const [revealedState, setRevealedState] = useState({});
+            const [strikes, setStrikes] = useState(0);
+            const [team1Score, setTeam1Score] = useState(0);
+            const [team2Score, setTeam2Score] = useState(0);
+            const [showStrikeOverlay, setShowStrikeOverlay] = useState(0);
+
+            const currentQuestion = gameData[currentQIndex];
+            
+            const roundScore = useMemo(() => {
+                let total = 0;
+                if (!currentQuestion) return 0;
+                currentQuestion.answers.forEach((ans, idx) => {
+                    if (revealedState[idx]) total += ans.score;
+                });
+                return total;
+            }, [revealedState, currentQuestion]);
+
+            useEffect(() => {
+                const initAudio = () => AudioSystem.init();
+                window.addEventListener('click', initAudio, { once: true });
+                return () => window.removeEventListener('click', initAudio);
+            }, []);
+
+            useEffect(() => {
+                setRevealedState({});
+                setStrikes(0);
+                setShowStrikeOverlay(0);
+            }, [currentQIndex]);
+
+            const handleUpload = (data) => {
+                setGameData(data);
+                localStorage.setItem('FEUD_DATA_USER_UPLOAD', JSON.stringify(data));
+                setCurrentQIndex(0);
+            };
+
+            const handleReset = () => {
+                if(confirm("This will clear the current game data and allow you to upload a new file. Continue?")) {
+                    setGameData([]);
+                    localStorage.removeItem('FEUD_DATA_USER_UPLOAD');
+                }
+            };
+
+            const actions = {
+                reveal: (idx) => {
+                    if (revealedState[idx]) return;
+                    AudioSystem.playDing();
+                    setRevealedState(prev => ({ ...prev, [idx]: true }));
+                },
+                strike: () => {
+                    const newStrikes = strikes + 1 > 3 ? 0 : strikes + 1;
+                    AudioSystem.playBuzz();
+                    setStrikes(newStrikes);
+                    setShowStrikeOverlay(newStrikes);
+                    setTimeout(() => setShowStrikeOverlay(0), 1500);
+                },
+                clearStrikes: () => {
+                    setStrikes(0);
+                    setShowStrikeOverlay(0);
+                },
+                changeQuestion: (delta) => {
+                    const newIdx = currentQIndex + delta;
+                    if (newIdx >= 0 && newIdx < gameData.length) {
+                        setCurrentQIndex(newIdx);
+                    }
+                },
+                awardPoints: (team) => {
+                    if (team === 1) setTeam1Score(s => s + roundScore);
+                    if (team === 2) setTeam2Score(s => s + roundScore);
+                    AudioSystem.playRoundWin();
+                }
+            };
+
+            useEffect(() => {
+                if (gameData.length === 0) return;
+                const handleKeyDown = (e) => {
+                    if (e.target.tagName === 'INPUT') return;
+                    if (!currentQuestion) return;
+
+                    if (e.key >= '1' && e.key <= '8') {
+                        const idx = parseInt(e.key) - 1;
+                        if (currentQuestion.answers[idx]) actions.reveal(idx);
+                    }
+                    if (e.key.toLowerCase() === 'x') actions.strike();
+                    if (e.key === 'ArrowRight') actions.changeQuestion(1);
+                    if (e.key === 'ArrowLeft') actions.changeQuestion(-1);
+                };
+                window.addEventListener('keydown', handleKeyDown);
+                return () => window.removeEventListener('keydown', handleKeyDown);
+            }, [currentQIndex, revealedState, strikes, currentQuestion, gameData]);
+
+            if (gameData.length === 0) {
+                return <FileUploader onUpload={handleUpload} />;
+            }
+
+            return (
+                <>
+                    <HostInterface 
+                        gameData={gameData}
+                        state={{ currentQIndex, revealedState, strikes, team1Score, team2Score, roundScore }}
+                        actions={actions}
+                        isProjectorOpen={isProjectorOpen}
+                        toggleProjector={() => setIsProjectorOpen(true)}
+                        onReset={handleReset}
+                    />
+                    {isProjectorOpen && currentQuestion && (
+                        <ProjectorWindow onClose={() => setIsProjectorOpen(false)}>
+                            <ProjectorView 
+                                question={currentQuestion.question}
+                                answers={currentQuestion.answers}
+                                revealedState={revealedState}
+                                strikes={strikes}
+                                team1Score={team1Score}
+                                team2Score={team2Score}
+                                roundScore={roundScore}
+                                showStrikeOverlay={showStrikeOverlay}
+                            />
+                        </ProjectorWindow>
+                    )}
+                </>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
