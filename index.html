@@ -258,7 +258,17 @@
                         {/* ROBUST LABEL-BASED UPLOAD */}
                         <label 
                             htmlFor="csv-upload" 
-                            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-lg transition-all transform hover:scale-105 shadow-lg flex items-center justify-center gap-2 cursor-pointer select-none"
+                            className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-lg transition-all transform hover:scale-105 shadow-lg flex items-center justify-center gap-2 cursor-pointer select-none relative"
+                            style={{ zIndex: 10, pointerEvents: 'auto' }}
+                            tabIndex={0}
+                            role="button"
+                            aria-label="Select CSV file to upload"
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    document.getElementById('csv-upload')?.click();
+                                }
+                            }}
                         >
                             <span>SELECT CSV FILE</span>
                         </label>
@@ -267,7 +277,20 @@
                             type="file" 
                             accept=".csv,text/csv,application/vnd.ms-excel"
                             onChange={handleFile}
-                            style={{ display: 'none' }}
+                            style={{
+                                position: 'absolute',
+                                width: '1px',
+                                height: '1px',
+                                padding: 0,
+                                margin: '-1px',
+                                overflow: 'hidden',
+                                clip: 'rect(0, 0, 0, 0)',
+                                whiteSpace: 'nowrap',
+                                border: 0,
+                                opacity: 0,
+                                pointerEvents: 'none'
+                            }}
+                            aria-hidden="true"
                         />
 
                         {/* FALLBACK DEMO BUTTON */}
